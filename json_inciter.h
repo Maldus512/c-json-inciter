@@ -9,23 +9,42 @@
 #include <string.h>
 
 
-#define JSON_INCITER_ELEMENT_LENGTH(Result)     ((Result).length)
-#define JSON_INCITER_STRING_LENGTH(Result)      ((Result).length - 2)
-#define JSON_INCITER_ELEMENT_NEXT_START(Result) ((Result).start + (Result).length)
+/**
+ * @brief Length of a string element (no check is performed)
+ *
+ * @param Element element in question
+ *
+ * @return Length of string element
+ */
+#define JSON_INCITER_STRING_LENGTH(Element) ((Element).length - 2)
+
+/**
+ * @brief Pointer to the remaining json, after the current element
+ *
+ * @param Element element in question
+ *
+ * @return Pointer to the remaining json stream
+ */
+#define JSON_INCITER_ELEMENT_NEXT_START(Element) ((Element).start + (Element).length)
 
 
+/**
+ * @brief State of the json stream
+ */
 typedef enum {
-    JSON_INCITER_STATE_OK = 0,
-    JSON_INCITER_STATE_DONE,
-    JSON_INCITER_STATE_INVALID,
-    JSON_INCITER_STATE_INCOMPLETE,
-} json_inciter_state_t;
+    JSON_INCITER_OK = 0,         // Valid json, a correct element was found
+    JSON_INCITER_DONE,           // Json stream is done (no element was returned)
+    JSON_INCITER_INVALID,        // Invalid json
+    JSON_INCITER_INCOMPLETE,     // Incomplete json (requires more character to successfully parse the next
+                                 // element)
+} json_inciter_t;
 
 
+/**
+ * @brief Element tag
+ */
 typedef enum {
-    JSON_INCITER_ELEMENT_TAG_INVALID = 0,
-    JSON_INCITER_ELEMENT_TAG_INCOMPLETE,
-    JSON_INCITER_ELEMENT_TAG_NULL,
+    JSON_INCITER_ELEMENT_TAG_NULL = 0,
     JSON_INCITER_ELEMENT_TAG_TRUE,
     JSON_INCITER_ELEMENT_TAG_FALSE,
     JSON_INCITER_ELEMENT_TAG_NUMBER,
@@ -35,18 +54,25 @@ typedef enum {
 } json_inciter_element_tag_t;
 
 
+/**
+ * @brief JSON element, after being parsed.
+ */
 typedef struct {
-    json_inciter_element_tag_t tag;
+    json_inciter_element_tag_t tag;     // Tag
 
-    const char *start;
-    size_t      length;
+    const char *start;      // Pointer to the string that makes up the element, in the original json stream
+    size_t      length;     // Length of the string that makes up the element
 
     union {
-        double      number;
-        const char *string;
+        double      number;     // Numerical value
+        const char *string;     // Pointer to the string value (within quotes)
     } as;
 } json_inciter_element_t;
 
+
+/*
+ * Private types and functions
+ */
 
 typedef enum {
     _JSON_INCITER_TOKEN_ANY = 0,
@@ -56,13 +82,6 @@ typedef enum {
     _JSON_INCITER_TOKEN_ARRAY,
     _JSON_INCITER_TOKEN_OBJECT,
 } _json_inciter_token_t;
-
-
-typedef enum {
-    _JSON_INCITER_LITERAL_PARSE_SUCCESS = 0,
-    _JSON_INCITER_LITERAL_PARSE_INCOMPLETE,
-    _JSON_INCITER_LITERAL_PARSE_ERROR,
-} _json_inciter_literal_parse_t;
 
 
 size_t _json_inciter_skip_whitespace(const char *buffer) {
@@ -206,7 +225,7 @@ _json_inciter_token_t _json_inciter_get_next_token_type(char current_char) {
      (Char) == ']' || (Char) == '\0')
 
 
-_json_inciter_literal_parse_t _json_inciter_parse_literal(const char *buffer, const char *keyword_str) {
+json_inciter_t _json_inciter_parse_literal(const char *buffer, const char *keyword_str) {
     size_t keyword_len = strlen(keyword_str);
     size_t buffer_len  = strlen(buffer);
 
@@ -214,31 +233,26 @@ _json_inciter_literal_parse_t _json_inciter_parse_literal(const char *buffer, co
     if (keyword_len <= buffer_len) {
         if (strncmp(buffer, keyword_str, keyword_len) == 0) {
             if (IS_TERMINATOR(buffer[keyword_len])) {
-                return _JSON_INCITER_LITERAL_PARSE_SUCCESS;
+                return JSON_INCITER_OK;
             } else {
-                return _JSON_INCITER_LITERAL_PARSE_ERROR;
+                return JSON_INCITER_INVALID;
             }
         } else {
-            return _JSON_INCITER_LITERAL_PARSE_ERROR;
+            return JSON_INCITER_INVALID;
         }
     }
     // Partial keyword
     else if (strncmp(buffer, keyword_str, buffer_len) == 0) {
-        return _JSON_INCITER_LITERAL_PARSE_INCOMPLETE;
+        return JSON_INCITER_INCOMPLETE;
     } else {
-        return _JSON_INCITER_LITERAL_PARSE_ERROR;
+        return JSON_INCITER_INVALID;
     }
 }
 
 
-json_inciter_element_t _json_inciter_parse_value_of_type(const char *buffer, _json_inciter_token_t token) {
+json_inciter_t _json_inciter_parse_value_of_type(const char *buffer, _json_inciter_token_t token,
+                                                 json_inciter_element_t *element) {
     size_t parsing_index = 0;
-
-    json_inciter_element_t element = {
-        .tag    = JSON_INCITER_ELEMENT_TAG_INCOMPLETE,
-        .start  = buffer,
-        .length = 0,
-    };
 
     parsing_index += _json_inciter_skip_whitespace(&buffer[parsing_index]);
 
@@ -252,132 +266,129 @@ json_inciter_element_t _json_inciter_parse_value_of_type(const char *buffer, _js
             const char *keyword_true  = "true";
             const char *keyword_false = "false";
 
-            _json_inciter_literal_parse_t literal_element = _JSON_INCITER_LITERAL_PARSE_ERROR;
-            element.start                                 = &buffer[parsing_index];
-            element.length                                = 0;
+            json_inciter_t result = JSON_INCITER_INVALID;
+            element->start        = &buffer[parsing_index];
+            element->length       = 0;
 
-            literal_element = _json_inciter_parse_literal(&buffer[parsing_index], keyword_null);
-            if (literal_element == _JSON_INCITER_LITERAL_PARSE_SUCCESS) {
-                element.tag    = JSON_INCITER_ELEMENT_TAG_NULL;
-                element.length = strlen(keyword_null);
-                break;
-            } else if (literal_element == _JSON_INCITER_LITERAL_PARSE_INCOMPLETE) {
-                element.tag = JSON_INCITER_ELEMENT_TAG_INCOMPLETE;
-                break;
+            result = _json_inciter_parse_literal(&buffer[parsing_index], keyword_null);
+            if (result == JSON_INCITER_OK) {
+                element->tag    = JSON_INCITER_ELEMENT_TAG_NULL;
+                element->length = strlen(keyword_null);
+                return JSON_INCITER_OK;
+            } else if (result == JSON_INCITER_INCOMPLETE) {
+                return JSON_INCITER_INCOMPLETE;
             }
 
-            literal_element = _json_inciter_parse_literal(&buffer[parsing_index], keyword_true);
-            if (literal_element == _JSON_INCITER_LITERAL_PARSE_SUCCESS) {
-                element.tag    = JSON_INCITER_ELEMENT_TAG_TRUE;
-                element.length = strlen(keyword_true);
-                break;
-            } else if (literal_element == _JSON_INCITER_LITERAL_PARSE_INCOMPLETE) {
-                element.tag = JSON_INCITER_ELEMENT_TAG_INCOMPLETE;
-                break;
+            result = _json_inciter_parse_literal(&buffer[parsing_index], keyword_true);
+            if (result == JSON_INCITER_OK) {
+                element->tag    = JSON_INCITER_ELEMENT_TAG_TRUE;
+                element->length = strlen(keyword_true);
+                return JSON_INCITER_OK;
+            } else if (result == JSON_INCITER_INCOMPLETE) {
+                return JSON_INCITER_INCOMPLETE;
             }
 
-            literal_element = _json_inciter_parse_literal(&buffer[parsing_index], keyword_false);
-            if (literal_element == _JSON_INCITER_LITERAL_PARSE_SUCCESS) {
-                element.tag    = JSON_INCITER_ELEMENT_TAG_FALSE;
-                element.length = strlen(keyword_false);
-                break;
-            } else if (literal_element == _JSON_INCITER_LITERAL_PARSE_INCOMPLETE) {
-                element.tag = JSON_INCITER_ELEMENT_TAG_INCOMPLETE;
-                break;
+            result = _json_inciter_parse_literal(&buffer[parsing_index], keyword_false);
+            if (result == JSON_INCITER_OK) {
+                element->tag    = JSON_INCITER_ELEMENT_TAG_FALSE;
+                element->length = strlen(keyword_false);
+                return JSON_INCITER_OK;
+            } else if (result == JSON_INCITER_INCOMPLETE) {
+                return JSON_INCITER_INCOMPLETE;
             }
 
-            element.tag = JSON_INCITER_ELEMENT_TAG_INVALID;
-            break;
+            return JSON_INCITER_INVALID;
         }
 
         case _JSON_INCITER_TOKEN_NUMBER: {
             const char *endptr = NULL;
 
-            element.start     = &buffer[parsing_index];
-            element.as.number = strtod(&buffer[parsing_index], (char **)&endptr);
+            element->start     = &buffer[parsing_index];
+            element->as.number = strtod(&buffer[parsing_index], (char **)&endptr);
 
             // No conversion, invalid number
             if (endptr == &buffer[parsing_index]) {
-                element.tag    = JSON_INCITER_ELEMENT_TAG_INVALID;
-                element.length = 0;
+                element->length = 0;
+                return JSON_INCITER_INVALID;
             }
             // Conversion successful
             else {
                 size_t terminator_index = parsing_index + (endptr - &buffer[parsing_index]);
                 if (IS_TERMINATOR(buffer[terminator_index])) {
-                    element.length = terminator_index - parsing_index;
-                    element.tag    = JSON_INCITER_ELEMENT_TAG_NUMBER;
+                    element->length = terminator_index - parsing_index;
+                    element->tag    = JSON_INCITER_ELEMENT_TAG_NUMBER;
+                    return JSON_INCITER_OK;
                 } else {
-                    element.tag    = JSON_INCITER_ELEMENT_TAG_INVALID;
-                    element.length = 0;
+                    element->length = 0;
+                    return JSON_INCITER_INVALID;
                 }
             }
             break;
         }
 
         case _JSON_INCITER_TOKEN_STRING: {
-            element.start     = &buffer[parsing_index];
-            element.length    = 0;
-            element.as.string = NULL;
+            element->start     = &buffer[parsing_index];
+            element->length    = 0;
+            element->as.string = NULL;
 
             if (buffer[parsing_index] != '"') {
-                element.tag = JSON_INCITER_ELEMENT_TAG_INVALID;
-                break;
+                return JSON_INCITER_INVALID;
             }
             parsing_index++;
 
             size_t string_end = parsing_index + _json_inciter_skip_string(&buffer[parsing_index]);
             // Valid string
             if (buffer[string_end] == '"') {
-                element.tag       = JSON_INCITER_ELEMENT_TAG_STRING;
-                element.start     = &buffer[parsing_index - 1];         // Include the quotes
-                element.length    = string_end - parsing_index + 2;     // Include the quotes
-                element.as.string = &buffer[parsing_index];             // No quotes
+                element->tag       = JSON_INCITER_ELEMENT_TAG_STRING;
+                element->start     = &buffer[parsing_index - 1];         // Include the quotes
+                element->length    = string_end - parsing_index + 2;     // Include the quotes
+                element->as.string = &buffer[parsing_index];             // No quotes
+                return JSON_INCITER_OK;
             }
             // End of stream
             else {
-                element.tag = JSON_INCITER_ELEMENT_TAG_INCOMPLETE;
+                return JSON_INCITER_INCOMPLETE;
             }
 
             break;
         }
 
         case _JSON_INCITER_TOKEN_ARRAY: {
-            element.start  = &buffer[parsing_index];
-            element.length = 0;
+            element->start  = &buffer[parsing_index];
+            element->length = 0;
 
             if (buffer[parsing_index] != '[') {
-                element.tag = JSON_INCITER_ELEMENT_TAG_INVALID;
-                break;
+                return JSON_INCITER_INVALID;
             }
             parsing_index++;
 
             int terminator_position = _json_inciter_skip_to_terminator(&buffer[parsing_index], ']');
             if (terminator_position < 0) {
-                element.tag = JSON_INCITER_ELEMENT_TAG_INVALID;
+                return JSON_INCITER_INVALID;
             } else {
-                element.tag    = JSON_INCITER_ELEMENT_TAG_ARRAY;
-                element.length = terminator_position + 2;
+                element->tag    = JSON_INCITER_ELEMENT_TAG_ARRAY;
+                element->length = terminator_position + 2;
+                return JSON_INCITER_OK;
             }
             break;
         }
 
         case _JSON_INCITER_TOKEN_OBJECT: {
-            element.start  = &buffer[parsing_index];
-            element.length = 0;
+            element->start  = &buffer[parsing_index];
+            element->length = 0;
 
             if (buffer[parsing_index] != '{') {
-                element.tag = JSON_INCITER_ELEMENT_TAG_INVALID;
-                break;
+                return JSON_INCITER_INVALID;
             }
             parsing_index++;
 
             int terminator_position = _json_inciter_skip_to_terminator(&buffer[parsing_index], '}');
             if (terminator_position < 0) {
-                element.tag = JSON_INCITER_ELEMENT_TAG_INVALID;
+                return JSON_INCITER_INVALID;
             } else {
-                element.tag    = JSON_INCITER_ELEMENT_TAG_OBJECT;
-                element.length = terminator_position + 2;
+                element->tag    = JSON_INCITER_ELEMENT_TAG_OBJECT;
+                element->length = terminator_position + 2;
+                return JSON_INCITER_OK;
             }
             break;
         }
@@ -386,48 +397,50 @@ json_inciter_element_t _json_inciter_parse_value_of_type(const char *buffer, _js
             break;
     }
 
-    return element;
+    return JSON_INCITER_INVALID;
 }
 
 
-json_inciter_element_t json_inciter_parse_value(const char *buffer) {
-    return _json_inciter_parse_value_of_type(buffer, _JSON_INCITER_TOKEN_ANY);
+/**
+ * Public API
+ */
+
+
+/**
+ * @brief attempts to parse a jso n buffer
+ *
+ * @param buffer the json string
+ * @param element a pointer to the struct to be filled with the parsed element
+ *
+ * @return result state
+ */
+json_inciter_t json_inciter_parse_value(const char *buffer, json_inciter_element_t *element) {
+    return _json_inciter_parse_value_of_type(buffer, _JSON_INCITER_TOKEN_ANY, element);
 }
 
 
-uint8_t json_inciter_copy_content(char *content_buffer, size_t max_len, json_inciter_element_t element) {
-    size_t      len   = 0;
-    const char *start = NULL;
-
-    if (element.tag == JSON_INCITER_ELEMENT_TAG_STRING) {
-        len   = JSON_INCITER_STRING_LENGTH(element);
-        start = element.as.string;
-    } else {
-        len   = JSON_INCITER_ELEMENT_LENGTH(element);
-        start = element.start;
-    }
-
-    if (len < max_len) {
-        memcpy(content_buffer, start, len);
-        content_buffer[len] = '\0';
-        return 0;
-    } else {
-        return -1;
-    }
-}
-
-
-json_inciter_element_t json_inciter_parse_pair(const char *buffer, const char **key, size_t *key_len) {
-    json_inciter_element_t element = {
-        .tag    = JSON_INCITER_ELEMENT_TAG_INCOMPLETE,
-        .start  = buffer,
-        .length = 0,
-    };
-
+/**
+ * @brief parse a key-value pair
+ *
+ * @param buffer the json string
+ * @param key pointer to a buffer to be filled with the key string
+ * @param key_len pointer to an index to be filled with the key string length
+ * @param element a pointer to the struct to be filled with the parsed element
+ *
+ * @return result state
+ */
+json_inciter_t json_inciter_parse_pair(const char *buffer, const char **key, size_t *key_len,
+                                       json_inciter_element_t *element) {
     size_t parsing_index = _json_inciter_skip_whitespace(buffer);
 
-    json_inciter_element_t key_element =
-        _json_inciter_parse_value_of_type(&buffer[parsing_index], _JSON_INCITER_TOKEN_STRING);
+    json_inciter_element_t key_element = {0};
+
+    json_inciter_t result =
+        _json_inciter_parse_value_of_type(&buffer[parsing_index], _JSON_INCITER_TOKEN_STRING, &key_element);
+    if (result != JSON_INCITER_OK) {
+        return result;
+    }
+
     if (key_element.tag == JSON_INCITER_ELEMENT_TAG_STRING) {
         if (key != NULL) {
             *key = key_element.as.string;
@@ -436,34 +449,39 @@ json_inciter_element_t json_inciter_parse_pair(const char *buffer, const char **
             *key_len = JSON_INCITER_STRING_LENGTH(key_element);
         }
 
-        parsing_index += JSON_INCITER_ELEMENT_LENGTH(key_element);
+        parsing_index += key_element.length;
         parsing_index += _json_inciter_skip_whitespace(&buffer[parsing_index]);
 
         // Pair
         if (buffer[parsing_index] == ':') {
             parsing_index++;
-            json_inciter_element_t element = json_inciter_parse_value(&buffer[parsing_index]);
-            return element;
+            return json_inciter_parse_value(&buffer[parsing_index], element);
         }
         // Incomplete
         else if (buffer[parsing_index] == '\0') {
-            return element;
+            return JSON_INCITER_INCOMPLETE;
         }
         // Invalid
         else {
-            element.tag    = JSON_INCITER_ELEMENT_TAG_INVALID;
-            element.start  = &buffer[parsing_index];
-            element.length = 0;
-            return element;
+            return JSON_INCITER_INVALID;
         }
     } else {
-        return key_element;
+        return JSON_INCITER_INVALID;
     }
 }
 
 
-json_inciter_state_t json_inciter_next_element_start(const char *buffer, json_inciter_element_tag_t tag,
-                                                     const char **next_start) {
+/**
+ * @brief find the pointer to the next element in the json buffer
+ *
+ * @param buffer json
+ * @param tag JSON_INCITER_ELEMENT_TAG_OBJECT or JSON_INCITER_ELEMENT_TAG_ARRAY
+ * @param next_start pointer to be filled with the position of the next element, if any
+ *
+ * @return result
+ */
+json_inciter_t json_inciter_next_element_start(const char *buffer, json_inciter_element_tag_t tag,
+                                               const char **next_start) {
     size_t parsing_index = _json_inciter_skip_whitespace(buffer);
     switch (buffer[parsing_index]) {
         // Comma, everything as expected
@@ -471,27 +489,34 @@ json_inciter_state_t json_inciter_next_element_start(const char *buffer, json_in
             if (next_start != NULL) {
                 *next_start = &buffer[parsing_index + 1];
             }
-            return JSON_INCITER_STATE_OK;
+            return JSON_INCITER_OK;
         case '}':
             if (tag == JSON_INCITER_ELEMENT_TAG_OBJECT) {
-                return JSON_INCITER_STATE_DONE;
+                return JSON_INCITER_DONE;
             } else {
-                return JSON_INCITER_STATE_INVALID;
+                return JSON_INCITER_INVALID;
             }
         case ']':
             if (tag == JSON_INCITER_ELEMENT_TAG_ARRAY) {
-                return JSON_INCITER_STATE_DONE;
+                return JSON_INCITER_DONE;
             } else {
-                return JSON_INCITER_STATE_INVALID;
+                return JSON_INCITER_INVALID;
             }
         case '\0':
-            return JSON_INCITER_STATE_INCOMPLETE;
+            return JSON_INCITER_INCOMPLETE;
         default:
-            return JSON_INCITER_STATE_INVALID;
+            return JSON_INCITER_INVALID;
     }
 }
 
 
+/**
+ * @brief get a pointer to the beginning of the content of the element
+ *
+ * @param element
+ *
+ * @return pointer
+ */
 const char *json_inciter_element_content_start(json_inciter_element_t element) {
     switch (element.tag) {
         case JSON_INCITER_ELEMENT_TAG_OBJECT:
@@ -504,33 +529,73 @@ const char *json_inciter_element_content_start(json_inciter_element_t element) {
 }
 
 
-json_inciter_state_t json_inciter_find_value_in_object(json_inciter_element_t object, const char *required_key,
-                                                       json_inciter_element_t *element) {
-    json_inciter_state_t json_inciter_state = JSON_INCITER_STATE_OK;
-    const char          *json_content       = json_inciter_element_content_start(object);
-    size_t               required_key_len   = strlen(required_key);
+/**
+ * @brief Look for a specific key in an object
+ *
+ * @param object
+ * @param required_key
+ * @param element
+ *
+ * @return result
+ */
+json_inciter_t json_inciter_find_value_in_object(json_inciter_element_t object, const char *required_key,
+                                                 json_inciter_element_t *element) {
+    json_inciter_t iteration_result = JSON_INCITER_OK;
+    const char    *json_content     = json_inciter_element_content_start(object);
+    size_t         required_key_len = strlen(required_key);
 
     do {
         const char            *key      = NULL;
         size_t                 key_size = 0;
-        json_inciter_element_t value    = json_inciter_parse_pair(json_content, &key, &key_size);
-        if (value.tag == JSON_INCITER_ELEMENT_TAG_INVALID) {
-            return JSON_INCITER_STATE_INVALID;
-        } else if (value.tag == JSON_INCITER_ELEMENT_TAG_INCOMPLETE) {
-            return JSON_INCITER_STATE_INCOMPLETE;
+        json_inciter_element_t value    = {0};
+        json_inciter_t         result   = json_inciter_parse_pair(json_content, &key, &key_size, &value);
+
+        if (result != JSON_INCITER_OK) {
+            return result;
         }
 
         if (key_size == required_key_len && strncmp(required_key, key, required_key_len) == 0) {
             *element = value;
-            return JSON_INCITER_STATE_OK;
+            return JSON_INCITER_OK;
         }
 
         json_content = JSON_INCITER_ELEMENT_NEXT_START(value);
-        json_inciter_state =
+        iteration_result =
             json_inciter_next_element_start(json_content, JSON_INCITER_ELEMENT_TAG_OBJECT, &json_content);
-    } while (json_inciter_state == JSON_INCITER_STATE_OK);
+    } while (iteration_result == JSON_INCITER_OK);
 
-    return JSON_INCITER_STATE_DONE;
+    return JSON_INCITER_DONE;
+}
+
+
+/**
+ * @brief copy the content of the element into a buffer. Useful mostly for strings.
+ *
+ * @param content_buffer the buffer to be filled with the content
+ * @param max_len the size of the buffer
+ * @param element
+ *
+ * @return 0 if successful (i.e. the buffer size was sufficient to hold the content), -1 otherwise
+ */
+uint8_t json_inciter_copy_content(char *content_buffer, size_t max_len, json_inciter_element_t element) {
+    size_t      len   = 0;
+    const char *start = NULL;
+
+    if (element.tag == JSON_INCITER_ELEMENT_TAG_STRING) {
+        len   = JSON_INCITER_STRING_LENGTH(element);
+        start = element.as.string + 1;
+    } else {
+        len   = element.length;
+        start = element.start;
+    }
+
+    if (len < max_len) {
+        memcpy(content_buffer, start, len);
+        content_buffer[len] = '\0';
+        return 0;
+    } else {
+        return -1;
+    }
 }
 
 
