@@ -2,4 +2,5 @@
 .sconsign.dblite
 compile_commands.json
 test/test_suite
+tmp
 .cache
