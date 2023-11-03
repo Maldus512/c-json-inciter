@@ -407,7 +407,7 @@ uint8_t json_inciter_copy_content(char *content_buffer, size_t max_len, json_inc
         start = element.start;
     }
 
-    if (len < max_len) {
+    if (len < max_len - 1) {
         memcpy(content_buffer, start, len);
         content_buffer[len] = '\0';
         return 0;
